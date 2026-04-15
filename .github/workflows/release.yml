@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/rexadb-darwin-amd64 .
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/rexadb-darwin-arm64 .
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/rexadb-linux-amd64 .
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/rexadb-windows-amd64.exe .
+
+      - name: Checksum
+        run: |
+          cd dist
+          sha256sum rexadb-* > checksums.txt
+          cat checksums.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

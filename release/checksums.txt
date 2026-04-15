@@ -1,0 +1,4 @@
+1a64d4a24ebb4e5d563e77e1a7f2a5d4a997c7e42dfc48eeb2ac88a1db93bc98  rexadb-darwin-amd64
+1594a2e22f306c6000d3b66131b9ba4dbb454bfd9735ac8c33c7402ccae48312  rexadb-darwin-arm64
+f8b46b17f359fd729b1e53387297865208485d40fac0a3aae60e326ad720a4f7  rexadb-linux-amd64
+fac3417eaf8e1d3b0de0fd06d0eabb4889a30a69c440081fe35c11e7a19f23ed  rexadb-windows-amd64.exe

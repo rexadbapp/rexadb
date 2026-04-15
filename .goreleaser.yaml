@@ -1,0 +1,45 @@
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: linux
+    goos:
+      - linux
+    goarch:
+      - amd64
+    binary: rexadb-linux-amd64
+
+  - id: darwin-intel
+    goos:
+      - darwin
+    goarch:
+      - amd64
+    binary: rexadb-darwin-amd64
+
+  - id: darwin-arm64
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    binary: rexadb-darwin-arm64
+
+  - id: windows
+    goos:
+      - windows
+    goarch:
+      - amd64
+    binary: rexadb-windows-amd64.exe
+    gobuild:
+      - -ldflags="-s -w"
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+release:
+  github:
+    owner: rexadb
+    name: rexadb
+  draft: false
+  prerelease: auto
