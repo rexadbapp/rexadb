@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,24 +13,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rexadb/rexadb/pkg/instance"
 	"github.com/rexadb/rexadb/pkg/provider"
 )
 
-func init() {}
-
 type PostgresProvider struct {
 	binPath string
-	manager *instance.Manager
+	manager *Manager
 	mu      sync.Mutex
 }
 
-func NewPostgresProvider() (*PostgresProvider, error) {
+func init() {
+	provider.Register("postgres", NewPostgresProvider)
+}
+
+func NewPostgresProvider() (provider.Provider, error) {
 	pgBin, err := findPostgresBin()
 	if err != nil {
 		fmt.Println("PostgreSQL not found. Installing...")
 		if installErr := installPostgres(); installErr != nil {
-			return nil, fmt.Errorf("failed to install postgres: %w\nPlease install PostgreSQL manually:\n  Arch:   sudo pacman -S postgresql\n  Ubuntu/Debian: sudo apt install postgresql\n  macOS:  brew install postgresql", installErr)
+			return nil, fmt.Errorf("failed to install postgres: %w\nPlease install manually:\n  Arch:   sudo pacman -S postgresql\n  Ubuntu/Debian: sudo apt install postgresql\n  macOS:  brew install postgresql", installErr)
 		}
 		pgBin, err = findPostgresBin()
 		if err != nil {
@@ -37,7 +39,7 @@ func NewPostgresProvider() (*PostgresProvider, error) {
 		}
 	}
 
-	mgr, err := instance.NewManager("postgres")
+	mgr, err := newManager("postgres")
 	if err != nil {
 		return nil, err
 	}
@@ -46,6 +48,129 @@ func NewPostgresProvider() (*PostgresProvider, error) {
 		binPath: pgBin,
 		manager: mgr,
 	}, nil
+}
+
+type Manager struct {
+	mu        sync.RWMutex
+	dir       string
+	instances map[string]*provider.InstanceInfo
+}
+
+func newManager(name string) (*Manager, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, ".rexadb", name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
+
+	m := &Manager{
+		dir:       dir,
+		instances: make(map[string]*provider.InstanceInfo),
+	}
+	if err := m.load(); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	return m, nil
+}
+
+func (m *Manager) path() string {
+	return filepath.Join(m.dir, "instances.json")
+}
+
+func (m *Manager) load() error {
+	data, err := os.ReadFile(m.path())
+	if err != nil {
+		return err
+	}
+	var instances []*provider.InstanceInfo
+	if err := json.Unmarshal(data, &instances); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, inst := range instances {
+		m.instances[inst.Name] = inst
+	}
+	return nil
+}
+
+func (m *Manager) save(instances []*provider.InstanceInfo) error {
+	data, err := json.MarshalIndent(instances, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(m.path(), data, 0644)
+}
+
+func (m *Manager) Add(inst *provider.InstanceInfo) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.instances[inst.Name]; exists {
+		return fmt.Errorf("instance %q already exists", inst.Name)
+	}
+	m.instances[inst.Name] = inst
+
+	instances := make([]*provider.InstanceInfo, 0, len(m.instances))
+	for _, i := range m.instances {
+		instances = append(instances, i)
+	}
+	return m.save(instances)
+}
+
+func (m *Manager) Get(name string) (*provider.InstanceInfo, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	inst, ok := m.instances[name]
+	return inst, ok
+}
+
+func (m *Manager) Remove(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.instances[name]; !exists {
+		return fmt.Errorf("instance %q not found", name)
+	}
+	delete(m.instances, name)
+
+	instances := make([]*provider.InstanceInfo, 0, len(m.instances))
+	for _, i := range m.instances {
+		instances = append(instances, i)
+	}
+	return m.save(instances)
+}
+
+func (m *Manager) List() []*provider.InstanceInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	instances := make([]*provider.InstanceInfo, 0, len(m.instances))
+	for _, inst := range m.instances {
+		instances = append(instances, inst)
+	}
+	return instances
+}
+
+func (m *Manager) Update(name string, fn func(*provider.InstanceInfo)) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	inst, exists := m.instances[name]
+	if !exists {
+		return fmt.Errorf("instance %q not found", name)
+	}
+	fn(inst)
+
+	instances := make([]*provider.InstanceInfo, 0, len(m.instances))
+	for _, i := range m.instances {
+		instances = append(instances, i)
+	}
+	return m.save(instances)
 }
 
 func installPostgres() error {
@@ -70,7 +195,7 @@ func installPostgres() error {
 		} else if _, err := exec.LookPath("scoop"); err == nil {
 			cmd = exec.Command("scoop", "install", "postgresql")
 		} else {
-			return fmt.Errorf("on Windows, install PostgreSQL manually from https://www.postgresql.org/download/windows/ or use Chocolatey: choco install postgresql")
+			return fmt.Errorf("on Windows, install PostgreSQL manually")
 		}
 	default:
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
@@ -138,8 +263,23 @@ func (p *PostgresProvider) Start(ctx context.Context, cfg provider.Config, instN
 		return err
 	}
 
-	if _, exists := p.manager.Get(instName); exists {
-		return fmt.Errorf("instance %q already running", instName)
+	if inst, exists := p.manager.Get(instName); exists {
+		if p.IsRunning(inst.DataDir) {
+			return fmt.Errorf("instance %q is already running", instName)
+		}
+		if err := p.startServer(cfg); err != nil {
+			return err
+		}
+		if err := p.setPassword(cfg); err != nil {
+			fmt.Printf("Warning: failed to set password: %v\n", err)
+		}
+		pid, err := p.getPID(cfg.DataDir)
+		if err == nil {
+			p.manager.Update(instName, func(i *provider.InstanceInfo) {
+				i.PID = pid
+			})
+		}
+		return nil
 	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
@@ -152,7 +292,7 @@ func (p *PostgresProvider) Start(ctx context.Context, cfg provider.Config, instN
 		}
 	}
 
-	inst := &instance.Instance{
+	inst := &provider.InstanceInfo{
 		Name:    instName,
 		Type:    p.Name(),
 		Host:    cfg.Host,
@@ -175,7 +315,7 @@ func (p *PostgresProvider) Start(ctx context.Context, cfg provider.Config, instN
 
 	pid, err := p.getPID(cfg.DataDir)
 	if err == nil {
-		p.manager.Update(instName, func(i *instance.Instance) {
+		p.manager.Update(instName, func(i *provider.InstanceInfo) {
 			i.PID = pid
 		})
 	}
@@ -241,11 +381,7 @@ func (p *PostgresProvider) initDB(cfg provider.Config) error {
 		return err
 	}
 
-	if err := p.configureAuth(cfg); err != nil {
-		return err
-	}
-
-	return nil
+	return p.configureAuth(cfg)
 }
 
 func (p *PostgresProvider) configureAuth(cfg provider.Config) error {
@@ -256,14 +392,12 @@ func (p *PostgresProvider) configureAuth(cfg provider.Config) error {
 	}
 	defer f.Close()
 
-	hbaEntries := fmt.Sprintf(`
-# Allow connections from any host
+	hbaEntries := `
 host all all 0.0.0.0/0 md5
 host all all ::/0 md5
-# Allow local connections
 host all all 127.0.0.1/32 md5
 host all all ::1/128 md5
-`)
+`
 	_, err = f.WriteString(hbaEntries)
 	return err
 }
@@ -363,6 +497,24 @@ func (p *PostgresProvider) Stop(instName string) error {
 		return fmt.Errorf("failed to stop: %w", err)
 	}
 
+	return nil
+}
+
+func (p *PostgresProvider) Delete(instName string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	inst, exists := p.manager.Get(instName)
+	if !exists {
+		return fmt.Errorf("instance %q not found", instName)
+	}
+
+	if p.IsRunning(inst.DataDir) {
+		if err := p.stopServer(inst.DataDir); err != nil {
+			return fmt.Errorf("failed to stop before delete: %w", err)
+		}
+	}
+
 	return p.manager.Remove(instName)
 }
 
@@ -384,14 +536,13 @@ func (p *PostgresProvider) Status(instName string) (bool, error) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "server is running") {
-		p.manager.Remove(instName)
 		return false, nil
 	}
 
 	return true, nil
 }
 
-func (p *PostgresProvider) List() []*instance.Instance {
+func (p *PostgresProvider) List() []*provider.InstanceInfo {
 	return p.manager.List()
 }
 
@@ -410,7 +561,7 @@ func (p *PostgresProvider) IsRunning(dataDir string) bool {
 	return strings.Contains(string(output), "server is running")
 }
 
-func (p *PostgresProvider) GetInstance(instName string) (*instance.Instance, bool) {
+func (p *PostgresProvider) GetInstance(instName string) (*provider.InstanceInfo, bool) {
 	return p.manager.Get(instName)
 }
 
@@ -419,8 +570,12 @@ func (p *PostgresProvider) ConnectionString(cfg provider.Config) string {
 	if host == "" {
 		host = "localhost"
 	}
+	db := cfg.DBName
+	if db == "" {
+		db = "postgres"
+	}
 	return fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s",
-		cfg.User, cfg.Password, host, cfg.Port, cfg.DBName,
+		cfg.User, cfg.Password, host, cfg.Port, db,
 	)
 }

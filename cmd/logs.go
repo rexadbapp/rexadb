@@ -1,10 +1,9 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
-	"github.com/rexadb/rexadb/pkg/provider/postgres"
+	"github.com/rexadb/rexadb/pkg/output"
 	"github.com/spf13/cobra"
 )
 
@@ -15,22 +14,37 @@ var logsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		instName := args[0]
 
-		p, err := postgres.NewPostgresProvider()
+		inst, _, err := findInstance(instName)
 		if err != nil {
-			return fmt.Errorf("failed to initialize provider: %w", err)
-		}
-
-		inst, exists := p.GetInstance(instName)
-		if !exists {
-			return fmt.Errorf("instance %q not found", instName)
+			output.Println()
+			output.Println(output.Red("Instance \"" + instName + "\" not found"))
+			output.Println()
+			output.Print("  Run ")
+			output.Print(output.Cyan("rexadb list"))
+			output.Println(" to see all instances")
+			output.Println()
+			return nil
 		}
 
 		data, err := os.ReadFile(inst.DataDir + "/postgresql.log")
 		if err != nil {
-			return fmt.Errorf("failed to read logs: %w", err)
+			data, err = os.ReadFile(inst.DataDir + "/redis.log")
+			if err != nil {
+				data, err = os.ReadFile(inst.DataDir + "/mongod.log")
+				if err != nil {
+					output.Println()
+					output.Println(output.Red("No log file found for this database type"))
+					output.Println()
+					return nil
+				}
+			}
 		}
 
-		fmt.Print(string(data))
+		output.Print("Logs for ")
+		output.Print(output.Bold(instName))
+		output.Printf(" (%s):\n", inst.DataDir)
+		output.Println()
+		output.Println(string(data))
 		return nil
 	},
 }

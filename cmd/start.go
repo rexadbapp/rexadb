@@ -5,9 +5,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/rexadb/rexadb/pkg/output"
 	"github.com/rexadb/rexadb/pkg/provider"
-	"github.com/rexadb/rexadb/pkg/provider/postgres"
 	"github.com/spf13/cobra"
 )
 
@@ -24,6 +25,50 @@ func getLocalIP() string {
 		}
 	}
 	return ""
+}
+
+func normalizeConfig(dbType string, cfg provider.Config) provider.Config {
+	switch dbType {
+	case "mysql":
+		if cfg.Port == 0 || cfg.Port == 5432 {
+			cfg.Port = 3306
+		}
+		if cfg.User == "" || cfg.User == "postgres" {
+			cfg.User = "root"
+		}
+		if cfg.Password == "" || cfg.Password == "postgres" {
+			cfg.Password = "root"
+		}
+	case "mariadb":
+		if cfg.Port == 0 || cfg.Port == 5432 {
+			cfg.Port = 3306
+		}
+		if cfg.User == "" || cfg.User == "postgres" {
+			cfg.User = "root"
+		}
+		if cfg.Password == "" || cfg.Password == "postgres" {
+			cfg.Password = "root"
+		}
+	case "redis":
+		if cfg.Port == 0 || cfg.Port == 5432 {
+			cfg.Port = 6379
+		}
+	case "mongodb":
+		if cfg.Port == 0 || cfg.Port == 5432 {
+			cfg.Port = 27017
+		}
+	case "postgres", "postgresql":
+		if cfg.Port == 0 {
+			cfg.Port = 5432
+		}
+		if cfg.User == "" {
+			cfg.User = "postgres"
+		}
+		if cfg.Password == "" {
+			cfg.Password = "postgres"
+		}
+	}
+	return cfg
 }
 
 var (
@@ -47,12 +92,20 @@ func init() {
 var startCmd = &cobra.Command{
 	Use:   "start [database] [instance-name]",
 	Short: "Start a database instance",
+	Long:  fmt.Sprintf("Start a database instance. Supported: %v", provider.GetRegisteredDatabases()),
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dbType := args[0]
 		instName := ""
 		if len(args) > 1 {
 			instName = args[1]
+		}
+
+		if inst, exists := findInstanceByName(dbType); exists {
+			dbType = inst.Type
+			if instName == "" {
+				instName = inst.Name
+			}
 		}
 
 		if instName == "" {
@@ -76,42 +129,69 @@ var startCmd = &cobra.Command{
 			DBName:   dbName,
 		}
 
-		var p *postgres.PostgresProvider
-		var err error
+		cfg = normalizeConfig(dbType, cfg)
 
-		switch dbType {
-		case "postgres", "postgresql":
-			p, err = postgres.NewPostgresProvider()
-		default:
-			return fmt.Errorf("unsupported database: %s", dbType)
-		}
-
+		p, err := provider.GetProvider(dbType)
 		if err != nil {
-			return fmt.Errorf("failed to initialize provider: %w", err)
+			return err
 		}
 
-		fmt.Printf("Starting %s instance %q on port %d...\n", p.Name(), instName, port)
+		output.Println()
+		output.Print("Starting ")
+		output.Print(output.Cyan(p.Name()))
+		output.Print(" instance ")
+		output.Print(output.Bold(instName))
+		output.Printf(" on port %d...\n", cfg.Port)
 
 		if err := p.Start(cmd.Context(), cfg, instName); err != nil {
+			if strings.Contains(err.Error(), "already running") {
+				output.Println()
+				output.Print(output.Yellow("Instance "))
+				output.Print(output.Bold(instName))
+				output.Println(output.Yellow(" is already running"))
+				output.Println()
+				return nil
+			}
 			return fmt.Errorf("failed to start: %w", err)
 		}
 
-		fmt.Printf("Instance %q started successfully!\n", instName)
+		output.Println()
+		output.Print("Instance ")
+		output.Print(output.Green(instName))
+		output.Println(" started successfully!")
+		output.Println()
+
+		output.Println("  " + output.Cyan("CONNECTION INFO"))
+		output.Println("  " + output.Gray("────────────────────────────────────────────────────"))
+		output.Println()
 
 		if host == "0.0.0.0" {
 			localIP := getLocalIP()
 			if localIP != "" {
-				networkConnStr := fmt.Sprintf("postgres://%s:%s@%s:%d/%s", user, password, localIP, port, dbName)
-				fmt.Printf("Local connection:  %s\n", p.ConnectionString(cfg))
-				fmt.Printf("Network connection: %s\n", networkConnStr)
-				fmt.Printf("\nConnect from other devices using the Network connection string above.\n")
+				connStr := p.ConnectionString(cfg)
+				output.Print("  ")
+				output.Print(output.Gray("Local:   "))
+				output.Println(connStr)
+				output.Print("  ")
+				output.Print(output.Gray("Network: "))
+				output.Printf("%s://%s:%s@%s:%d/%s\n", dbType, user, password, localIP, port, dbName)
+				output.Println()
+				output.Println("  " + output.Yellow("Connect from other devices using the Network connection string."))
 			} else {
-				fmt.Printf("Connection: %s\n", p.ConnectionString(cfg))
+				output.Print("  ")
+				output.Print(output.Gray("Connection: "))
+				output.Println(p.ConnectionString(cfg))
 			}
 		} else {
-			fmt.Printf("Connection: %s\n", p.ConnectionString(cfg))
+			output.Print("  ")
+			output.Print(output.Gray("Connection: "))
+			output.Println(p.ConnectionString(cfg))
 		}
-		fmt.Printf("Data directory: %s\n", dataDir)
+
+		output.Print("  ")
+		output.Print(output.Gray("Data dir:   "))
+		output.Println(output.Gray(dataDir))
+		output.Println()
 
 		return nil
 	},

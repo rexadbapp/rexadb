@@ -1,10 +1,8 @@
 package cmd
 
 import (
-	"fmt"
-	"net"
-
-	"github.com/rexadb/rexadb/pkg/provider/postgres"
+	"github.com/rexadb/rexadb/pkg/output"
+	"github.com/rexadb/rexadb/pkg/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -15,45 +13,61 @@ var verifyCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		instName := args[0]
 
-		p, err := postgres.NewPostgresProvider()
+		inst, p, err := findInstance(instName)
 		if err != nil {
-			return fmt.Errorf("failed to initialize provider: %w", err)
-		}
-
-		inst, exists := p.GetInstance(instName)
-		if !exists {
-			return fmt.Errorf("instance %q not found", instName)
-		}
-
-		running, err := p.Status(instName)
-		if err != nil || !running {
-			fmt.Printf("Instance %q is NOT running\n", instName)
+			output.Println()
+			output.Println(output.Red("Instance \"" + instName + "\" not found"))
+			output.Println()
+			output.Print("  Run ")
+			output.Print(output.Cyan("rexadb list"))
+			output.Println(" to see all instances")
+			output.Println()
 			return nil
 		}
 
-		fmt.Printf("Instance %q is RUNNING\n\n", instName)
-
-		fmt.Println("Connection Info:")
-		fmt.Printf("  Type:    %s\n", inst.Type)
-		fmt.Printf("  Port:    %d\n", inst.Port)
-		fmt.Printf("  PID:     %d\n", inst.PID)
-		fmt.Printf("  DataDir: %s\n\n", inst.DataDir)
-
-		fmt.Println("Network Access: ENABLED")
-		if ip := getLocalIP(); ip != "" {
-			fmt.Printf("  Your IP:   %s\n", ip)
-			fmt.Printf("  Connect:   postgres://postgres:postgres@%s:%d\n\n", ip, inst.Port)
+		running, _ := p.Status(instName)
+		if !running {
+			output.Println()
+			output.Println(output.Red("Instance \"" + instName + "\" is NOT running"))
+			output.Println()
+			output.Print("  Run ")
+			output.Print(output.Cyan("rexadb start " + instName))
+			output.Println(" to start it")
+			output.Println()
+			return nil
 		}
-		fmt.Println("To connect from other devices on your network:")
-		fmt.Printf("  postgres://postgres:postgres@<device-ip>:%d\n", inst.Port)
 
-		fmt.Println("\nTesting TCP connectivity...")
-		_, err = net.Dial("tcp", fmt.Sprintf("0.0.0.0:%d", inst.Port))
-		if err != nil {
-			fmt.Printf("  TCP Check: FAILED - %v\n", err)
-		} else {
-			fmt.Println("  TCP Check: OK - Port is listening on 0.0.0.0")
+		output.Println()
+		output.Print("Instance ")
+		output.Print(output.Green(instName))
+		output.Println(" is RUNNING")
+		output.Println()
+
+		output.Println("  " + output.Cyan("CONNECTION INFO"))
+		output.Println("  " + output.Gray("────────────────────────────────────────────────────"))
+		output.Println()
+		output.Print("  ")
+		output.Print(output.Gray("Type:          "))
+		output.Println(inst.Type)
+		output.Print("  ")
+		output.Print(output.Gray("Port:          "))
+		output.Printf("%d\n", inst.Port)
+		output.Print("  ")
+		output.Print(output.Gray("PID:           "))
+		output.Printf("%d\n", inst.PID)
+		output.Print("  ")
+		output.Print(output.Gray("DataDir:       "))
+		output.Println(inst.DataDir)
+		output.Println()
+
+		cfg := provider.Config{
+			Port:    inst.Port,
+			Host:    inst.Host,
+			DataDir: inst.DataDir,
+			DBName:  inst.Name,
 		}
+		output.Println("  " + output.Green("Connection: "+p.ConnectionString(cfg)))
+		output.Println()
 
 		return nil
 	},
