@@ -54,12 +54,12 @@ fi
 TEMP_FILE=$(mktemp)
 curl -fL "$ASSET_URL" -o "$TEMP_FILE"
 
+if [ "$OS" = "darwin" ]; then
+    xattr -cr "$TEMP_FILE" 2>/dev/null || true
+fi
+
 mv "$TEMP_FILE" "${INSTALL_DIR}/${BIN_NAME}"
 chmod +x "${INSTALL_DIR}/${BIN_NAME}"
-
-if [ "$OS" = "darwin" ]; then
-    xattr -cr "${INSTALL_DIR}/${BIN_NAME}" 2>/dev/null || true
-fi
 
 echo ""
 echo "Installed to: ${INSTALL_DIR}/${BIN_NAME}"
