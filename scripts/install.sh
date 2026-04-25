@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="rexadb/rexadb"
+REPO="rexadbapp/rexadb"
 BIN_NAME="rexadb"
 
 detect_os() {
