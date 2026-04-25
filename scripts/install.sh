@@ -55,10 +55,12 @@ TEMP_FILE=$(mktemp)
 curl -fL "$ASSET_URL" -o "$TEMP_FILE"
 
 if [ "$OS" = "darwin" ]; then
-    xattr -cr "$TEMP_FILE" 2>/dev/null || true
+    xattr -dr com.apple.quarantine "$TEMP_FILE" 2>/dev/null || true
+    cp "$TEMP_FILE" "${INSTALL_DIR}/${BIN_NAME}"
+    rm -f "$TEMP_FILE"
+else
+    mv "$TEMP_FILE" "${INSTALL_DIR}/${BIN_NAME}"
 fi
-
-mv "$TEMP_FILE" "${INSTALL_DIR}/${BIN_NAME}"
 chmod +x "${INSTALL_DIR}/${BIN_NAME}"
 
 echo ""
