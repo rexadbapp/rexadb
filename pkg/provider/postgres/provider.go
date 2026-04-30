@@ -31,11 +31,27 @@ func NewPostgresProvider() (provider.Provider, error) {
 	if err != nil {
 		fmt.Println("PostgreSQL not found. Installing...")
 		if installErr := installPostgres(); installErr != nil {
-			return nil, fmt.Errorf("failed to install postgres: %w\nPlease install manually:\n  Arch:   sudo pacman -S postgresql\n  Ubuntu/Debian: sudo apt install postgresql\n  macOS:  brew install postgresql", installErr)
+			return nil, fmt.Errorf("failed to install postgres: %w\nPlease install manually:\n  Arch:   sudo pacman -S postgresql\n  Ubuntu/Debian: sudo apt install postgresql\n  macOS:  brew install postgresql@18", installErr)
 		}
 		pgBin, err = findPostgresBin()
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	shareDir := findShareDir(pgBin)
+	if shareDir == "" {
+		fmt.Println("PostgreSQL installation appears corrupted (missing share files). Reinstalling...")
+		if reinstallErr := reinstallPostgres(); reinstallErr != nil {
+			return nil, fmt.Errorf("postgresql installation is corrupted and could not be auto-repaired.\nPlease run:\n  brew uninstall postgresql@18 && brew install postgresql@18")
+		}
+		pgBin, err = findPostgresBin()
+		if err != nil {
+			return nil, err
+		}
+		shareDir = findShareDir(pgBin)
+		if shareDir == "" {
+			return nil, fmt.Errorf("postgresql installation is still broken after reinstall")
 		}
 	}
 
@@ -188,7 +204,7 @@ func installPostgres() error {
 			return fmt.Errorf("unsupported Linux distribution")
 		}
 	case "darwin":
-		cmd = exec.Command("brew", "install", "postgresql")
+		cmd = exec.Command("brew", "install", "postgresql@18")
 	case "windows":
 		if _, err := exec.LookPath("choco"); err == nil {
 			cmd = exec.Command("choco", "install", "postgresql", "-y")
@@ -207,18 +223,82 @@ func installPostgres() error {
 	return cmd.Run()
 }
 
+func reinstallPostgres() error {
+	var cmd *exec.Cmd
+
+	switch runtime.GOOS {
+	case "darwin":
+		fmt.Println()
+		fmt.Println("  PostgreSQL installation appears incomplete or corrupted.")
+		fmt.Println("  Would you like to reinstall it? (y/n)")
+		fmt.Println()
+		fmt.Print("  > ")
+		
+		var response string
+		fmt.Scanln(&response)
+		if response != "y" && response != "Y" {
+			return fmt.Errorf("user declined reinstall")
+		}
+		
+		fmt.Println("Uninstalling postgresql@18...")
+		cmd = exec.Command("brew", "uninstall", "--force", "--formula", "postgresql@18")
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
+		
+		fmt.Println("Unlinking conflicting libpq...")
+		cmd = exec.Command("brew", "unlink", "libpq")
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
+		
+		fmt.Println("Installing postgresql@18...")
+		cmd = exec.Command("brew", "install", "postgresql@18")
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		installErr := cmd.Run()
+		
+		if installErr != nil {
+			fmt.Println("Installation had issues, trying force link...")
+			cmd = exec.Command("brew", "link", "--overwrite", "--force", "postgresql@18")
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Run()
+		}
+		
+		return nil
+	default:
+		return fmt.Errorf("auto-reinstall not supported on this platform. Please reinstall manually.")
+	}
+}
+
 func findPostgresBin() (string, error) {
+	if path, err := exec.LookPath("pg_ctl"); err == nil {
+		binDir := filepath.Dir(path)
+		if hasAllBinaries(binDir) {
+			return binDir, nil
+		}
+	}
+
 	paths := []string{
 		"/usr/lib/postgresql",
 		"/usr/bin",
 		"/usr/local/bin",
+		"/usr/local/opt/postgresql@18/bin",
+		"/usr/local/opt/postgresql@17/bin",
 		"/usr/local/opt/postgresql@16/bin",
 		"/usr/local/opt/postgresql@15/bin",
 		"/usr/local/opt/postgresql@14/bin",
+		"/opt/homebrew/opt/postgresql@18/bin",
+		"/opt/homebrew/opt/postgresql@17/bin",
 		"/opt/homebrew/opt/postgresql@16/bin",
 		"/opt/homebrew/opt/postgresql@15/bin",
 		"/opt/homebrew/opt/postgresql@14/bin",
-		"/usr/local/opt/postgresql/bin",
+		"/opt/homebrew/opt/postgresql/bin",
 		"/Applications/Postgres.app/Contents/Versions/latest/bin",
 	}
 
@@ -230,7 +310,7 @@ func findPostgresBin() (string, error) {
 	}
 
 	for _, base := range paths {
-		if _, err := os.Stat(filepath.Join(base, "pg_ctl")); err == nil {
+		if hasAllBinaries(base) {
 			return base, nil
 		}
 
@@ -240,17 +320,45 @@ func findPostgresBin() (string, error) {
 		}
 		for _, v := range versions {
 			binPath := filepath.Join(base, v.Name(), "bin")
-			if _, err := os.Stat(filepath.Join(binPath, "pg_ctl")); err == nil {
+			if hasAllBinaries(binPath) {
 				return binPath, nil
 			}
 		}
 	}
 
-	if path, err := exec.LookPath("pg_ctl"); err == nil {
-		return filepath.Dir(path), nil
+	return "", fmt.Errorf("postgresql not found in common locations")
+}
+
+func hasAllBinaries(dir string) bool {
+	required := []string{"pg_ctl", "initdb", "postgres"}
+	for _, bin := range required {
+		if _, err := os.Stat(filepath.Join(dir, bin)); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func findShareDir(binPath string) string {
+	possible := []string{
+		filepath.Join(filepath.Dir(binPath), "..", "share", "postgresql"),
+		filepath.Join(filepath.Dir(binPath), "..", "share"),
+		"/usr/share/postgresql",
+		"/opt/homebrew/share/postgresql@18",
+		"/opt/homebrew/share/postgresql@17",
+		"/opt/homebrew/share/postgresql@16",
+		"/opt/homebrew/share/postgresql",
+		"/usr/local/share/postgresql",
 	}
 
-	return "", fmt.Errorf("postgresql not found in common locations")
+	for _, dir := range possible {
+		if _, err := os.Stat(filepath.Join(dir, "postgres.bki")); err == nil {
+			if _, err := os.Stat(filepath.Join(dir, "pg_hba.conf.sample")); err == nil {
+				return dir
+			}
+		}
+	}
+	return ""
 }
 
 func (p *PostgresProvider) Name() string { return "postgres" }
@@ -290,6 +398,9 @@ func (p *PostgresProvider) Start(ctx context.Context, cfg provider.Config, instN
 		if err := p.initDB(cfg); err != nil {
 			return fmt.Errorf("failed to initialize database: %w", err)
 		}
+	} else {
+		// Always update port in config
+		p.updateConfig(cfg)
 	}
 
 	inst := &provider.InstanceInfo{
@@ -307,6 +418,14 @@ func (p *PostgresProvider) Start(ctx context.Context, cfg provider.Config, instN
 	if err := p.startServer(cfg); err != nil {
 		p.manager.Remove(instName)
 		return err
+	}
+
+	time.Sleep(2 * time.Second)
+
+	if !p.IsRunning(cfg.DataDir) {
+		logData, _ := os.ReadFile(filepath.Join(cfg.DataDir, "postgresql.log"))
+		p.manager.Remove(instName)
+		return fmt.Errorf("server failed to start properly:\n%s", string(logData))
 	}
 
 	if err := p.setPassword(cfg); err != nil {
@@ -337,13 +456,19 @@ func (p *PostgresProvider) getPID(dataDir string) (int, error) {
 }
 
 func (p *PostgresProvider) initDB(cfg provider.Config) error {
-	cmd := exec.Command(
-		filepath.Join(p.binPath, "initdb"),
+	shareDir := findShareDir(p.binPath)
+
+	args := []string{
 		"-D", cfg.DataDir,
 		"-U", cfg.User,
 		"--no-locale",
 		"--encoding", "UTF8",
-	)
+	}
+	if shareDir != "" {
+		args = append(args, "-L", shareDir)
+	}
+
+	cmd := exec.Command(filepath.Join(p.binPath, "initdb"), args...)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "PGDATA="+cfg.DataDir)
 
@@ -354,6 +479,10 @@ func (p *PostgresProvider) initDB(cfg provider.Config) error {
 
 	listenAddr := cfg.Host
 	if listenAddr == "" {
+		listenAddr = "localhost"
+	}
+
+	if listenAddr == "0.0.0.0" || listenAddr == "" {
 		listenAddr = "localhost"
 	}
 
@@ -368,11 +497,11 @@ func (p *PostgresProvider) initDB(cfg provider.Config) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(fmt.Sprintf("listen_addresses = '%s'\n", listenAddr))
+	_, err = f.WriteString(fmt.Sprintf("listen_addresses = 'localhost'\n"))
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString("unix_socket_directories = '" + cfg.DataDir + "'\n")
+	_, err = f.WriteString("unix_socket_directories = ''\n")
 	if err != nil {
 		return err
 	}
@@ -402,26 +531,62 @@ host all all ::1/128 md5
 	return err
 }
 
-func (p *PostgresProvider) startServer(cfg provider.Config) error {
-	if err := os.Chmod(cfg.DataDir, 0700); err != nil {
+func (p *PostgresProvider) updateConfig(cfg provider.Config) error {
+	confPath := filepath.Join(cfg.DataDir, "postgresql.conf")
+	
+	// Read existing config
+	data, err := os.ReadFile(confPath)
+	if err != nil {
 		return err
 	}
+	
+	newContent := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "port ") {
+			newContent += "port = " + strconv.Itoa(cfg.Port) + "\n"
+		} else {
+			newContent += line + "\n"
+		}
+	}
+	
+	return os.WriteFile(confPath, []byte(newContent), 0644)
+}
+
+func (p *PostgresProvider) startServer(cfg provider.Config) error {
+	os.Chmod(cfg.DataDir, 0700)
+
+	// Check what's using the port
+	checkPort := exec.Command("lsof", "-sTCP:LISTEN", "-i", ":"+strconv.Itoa(cfg.Port))
+	out, _ := checkPort.Output()
+	portOutput := string(out)
+	if portOutput != "" {
+		fmt.Printf("Port %d is in use:\n%s\n", cfg.Port, portOutput)
+	}
+
+	// Kill any existing processes on common postgres ports
+	exec.Command("sh", "-c", fmt.Sprintf("lsof -sTCP:LISTEN -i :%d -t 2>/dev/null | xargs kill -9 || true", cfg.Port)).Run()
+	time.Sleep(1 * time.Second)
+
+	// Remove stale pid and socket files
+	os.Remove(filepath.Join(cfg.DataDir, "postmaster.pid"))
 
 	cmd := exec.Command(
 		filepath.Join(p.binPath, "pg_ctl"),
 		"-D", cfg.DataDir,
 		"-l", filepath.Join(cfg.DataDir, "postgresql.log"),
 		"start",
+		"-w",
+		"-t", "60",
 	)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, "PGDATA="+cfg.DataDir)
 
-	err := cmd.Start()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to start pg_ctl: %w", err)
+		return fmt.Errorf("pg_ctl start failed: %s\n%s", err, string(output))
 	}
 
-	err = cmd.Wait()
+	time.Sleep(1 * time.Second)
 
 	if cfg.DBName != "" {
 		if err := p.createDB(cfg); err != nil {
@@ -547,6 +712,21 @@ func (p *PostgresProvider) List() []*provider.InstanceInfo {
 }
 
 func (p *PostgresProvider) IsRunning(dataDir string) bool {
+	pidFile := filepath.Join(dataDir, "postmaster.pid")
+	if _, err := os.Stat(pidFile); err == nil {
+		data, _ := os.ReadFile(pidFile)
+		lines := strings.Split(string(data), "\n")
+		if len(lines) > 0 {
+			pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+			if err == nil && pid > 0 {
+				proc, err := os.FindProcess(pid)
+				if err == nil && proc.Pid == pid {
+					return true
+				}
+			}
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

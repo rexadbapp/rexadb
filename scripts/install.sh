@@ -29,9 +29,44 @@ if [ -z "$OS" ] || [ -z "$ARCH" ]; then
 fi
 
 download_url() {
-    local url
-    url=$(curl -sL "https://api.github.com/repos/${REPO}/releases/latest" | \
-        jq -r ".assets[] | select(.name | contains(\"${OS}\") and contains(\"${ARCH}\")) | .browser_download_url")
+    local url=""
+    
+    # Try using gh CLI first (avoids rate limits)
+    if command -v gh >/dev/null 2>&1; then
+        url=$(gh release view --repo "${REPO}" --json assets --jq ".assets[] | select(.name | contains(\"${OS}_\") and contains(\"${ARCH}\")) | .url" 2>/dev/null || true)
+        if [ -z "$url" ] || [ "$url" = "null" ]; then
+            url=$(gh release view --repo "${REPO}" --json assets --jq ".assets[] | select(.name | contains(\"${OS}-\") and contains(\"${ARCH}\")) | .url" 2>/dev/null || true)
+        fi
+        if [ -n "$url" ] && [ "$url" != "null" ]; then
+            echo "$url"
+            return
+        fi
+    fi
+    
+    # Fallback to API with auth if available
+    local auth_header=""
+    if [ -n "$GITHUB_TOKEN" ]; then
+        auth_header="-H \"Authorization: token $GITHUB_TOKEN\""
+    fi
+    
+    local release_info
+    release_info=$(curl -sL $auth_header "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || echo "{}")
+    
+    # Check for error
+    if echo "$release_info" | jq -e '.message' >/dev/null 2>&1; then
+        echo "Warning: API issue: $(echo "$release_info" | jq -r '.message')" >&2
+        # Try listing releases instead
+        release_info=$(curl -sL $auth_header "https://api.github.com/repos/${REPO}/releases" | jq '.[0]' 2>/dev/null || echo "{}")
+    fi
+    
+    # Extract the asset URL
+    url=$(echo "$release_info" | jq -r ".assets[] | select(.name | contains(\"${OS}_\") and contains(\"${ARCH}\")) | .browser_download_url" 2>/dev/null || true)
+    
+    # If not found with underscore, try hyphen
+    if [ -z "$url" ] || [ "$url" = "null" ]; then
+        url=$(echo "$release_info" | jq -r ".assets[] | select(.name | contains(\"${OS}-\") and contains(\"${ARCH}\")) | .browser_download_url" 2>/dev/null || true)
+    fi
+    
     echo "$url"
 }
 
@@ -39,7 +74,7 @@ echo "Detected: ${OS}-${ARCH}"
 echo "Fetching latest release..."
 ASSET_URL=$(download_url)
 
-if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ] || [ "$ASSET_URL" = "null" ]; then
     echo "Error: Could not find release for your platform"
     exit 1
 fi

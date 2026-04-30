@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/rexadb/rexadb/pkg/provider"
@@ -436,8 +435,11 @@ func (p *MysqlProvider) IsRunning(dataDir string) bool {
 		return false
 	}
 
-	err = syscall.Kill(pid, 0)
-	return err == nil
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Pid == pid
 }
 
 func (p *MysqlProvider) GetInstance(instName string) (*provider.InstanceInfo, bool) {

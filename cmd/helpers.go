@@ -34,6 +34,21 @@ func findInstanceByName(instName string) (*provider.InstanceInfo, bool) {
 	return nil, false
 }
 
+func findInstanceByDataDir(dataDir string) (*provider.InstanceInfo, provider.Provider, bool) {
+	for _, dbType := range provider.GetRegisteredDatabases() {
+		p, err := provider.GetProvider(dbType)
+		if err != nil {
+			continue
+		}
+		for _, inst := range p.List() {
+			if inst.DataDir == dataDir {
+				return inst, p, true
+			}
+		}
+	}
+	return nil, nil, false
+}
+
 func getAllInstances() []*provider.InstanceInfo {
 	var all []*provider.InstanceInfo
 	for _, dbType := range provider.GetRegisteredDatabases() {
