@@ -101,7 +101,7 @@ var startCmd = &cobra.Command{
 			instName = args[1]
 		}
 
-		if inst, exists := findInstanceByName(dbType); exists {
+		if inst, exists := findInstanceByName(dbType, dbType); exists {
 			dbType = inst.Type
 			if instName == "" {
 				instName = inst.Name

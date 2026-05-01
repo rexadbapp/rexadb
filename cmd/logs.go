@@ -25,7 +25,7 @@ var logsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		instName := args[0]
 
-		inst, exists := findInstanceByName(instName)
+		inst, exists := findInstanceByName(getDbTypeFromInstanceName(instName), instName)
 		if !exists {
 			output.Println()
 			output.Println(output.Red("Instance \"" + instName + "\" not found"))
