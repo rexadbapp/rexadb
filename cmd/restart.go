@@ -16,7 +16,7 @@ var restartCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		instName := args[0]
 
-		inst, p, err := findInstance(instName)
+		inst, p, err := findInstance(getDbTypeFromInstanceName(instName), instName)
 		if err != nil {
 			output.Println()
 			output.Println(output.Red("Instance \"" + instName + "\" not found"))

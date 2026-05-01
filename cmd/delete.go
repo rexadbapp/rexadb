@@ -139,7 +139,7 @@ func interactiveDelete() error {
 	var failed []string
 	for _, num := range toDelete {
 		inst := instances[num-1]
-		_, p, err := findInstance(inst.Name)
+		_, p, err := findInstance(getDbTypeFromInstanceName(inst.Name), inst.Name)
 		if err != nil {
 			failed = append(failed, inst.Name)
 			continue
@@ -166,7 +166,7 @@ func interactiveDelete() error {
 }
 
 func deleteSingle(instName string) error {
-	inst, p, err := findInstance(instName)
+	inst, p, err := findInstance(getDbTypeFromInstanceName(instName), instName)
 	if err != nil {
 		output.Println()
 		output.Println(output.Red("Instance \"" + instName + "\" not found"))
